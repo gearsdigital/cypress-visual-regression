@@ -15,7 +15,6 @@ const {
 let SNAPSHOT_BASE_DIRECTORY;
 let SNAPSHOT_DIFF_DIRECTORY;
 let CYPRESS_SCREENSHOT_DIR;
-let ALWAYS_GENERATE_DIFF;
 
 function setupScreenshotPath(config) {
   // use cypress default path as fallback
@@ -31,30 +30,37 @@ function setupSnapshotPaths(args) {
     args.diffDir || path.join(process.cwd(), 'cypress', 'snapshots', 'diff');
 }
 
-function setupDiffImageGeneration(args) {
-  ALWAYS_GENERATE_DIFF = true;
-  if (args.keepDiff === false) ALWAYS_GENERATE_DIFF = false;
-}
-
 function visualRegressionCopy(args) {
   setupSnapshotPaths(args);
   const baseDir = path.join(SNAPSHOT_BASE_DIRECTORY, args.specName);
+  // Fallback until https://github.com/cypress-io/cypress/issues/1586 is fixed
+  // When a user runs in the GUI - screenshots will be saved in All Specs
   const from = path.join(
     CYPRESS_SCREENSHOT_DIR,
     args.specName,
     `${args.from}.png`
   );
+  const fallbackFrom = path.join(
+    CYPRESS_SCREENSHOT_DIR,
+    'All Specs',
+    `${args.from}.png`
+  );
   const to = path.join(baseDir, `${args.to}.png`);
 
-  return createFolder(baseDir, false).then(() => {
-    fs.copyFileSync(from, to);
-    return true;
-  });
+  return createFolder(baseDir, false)
+    .then(() => {
+      fs.copyFileSync(from, to);
+      return true;
+    })
+    .catch(() => {
+      fs.copyFileSync(fallbackFrom, to);
+      fs.rmSync(fallbackFrom);
+      return true;
+    });
 }
 
 async function compareSnapshotsPlugin(args) {
   setupSnapshotPaths(args);
-  setupDiffImageGeneration(args);
 
   const fileName = sanitize(args.fileName);
 
@@ -80,6 +86,8 @@ async function compareSnapshotsPlugin(args) {
   let percentage = 0;
   try {
     await createFolder(SNAPSHOT_DIFF_DIRECTORY, args.failSilently);
+    const specFolder = path.join(SNAPSHOT_DIFF_DIRECTORY, args.specDirectory);
+    await createFolder(specFolder, args.failSilently);
     const imgExpected = await parseImage(options.expectedImage);
     const imgActual = await parseImage(options.actualImage);
     const diff = new PNG({
@@ -104,24 +112,17 @@ async function compareSnapshotsPlugin(args) {
       diff.data,
       diff.width,
       diff.height,
-      { threshold: 0.1 }
+      {
+        threshold: 0.1,
+      }
     );
     percentage = (mismatchedPixels / diff.width / diff.height) ** 0.5;
 
-    if (percentage > args.errorThreshold) {
-      const specFolder = path.join(SNAPSHOT_DIFF_DIRECTORY, args.specDirectory);
-      await createFolder(specFolder, args.failSilently);
-      diff.pack().pipe(fs.createWriteStream(options.diffImage));
-      throw new Error(
-        `The "${fileName}" image is different. Threshold limit exceeded! \nExpected: ${args.errorThreshold} \nActual: ${percentage}`
-      );
-    } else if (ALWAYS_GENERATE_DIFF) {
-      const specFolder = path.join(SNAPSHOT_DIFF_DIRECTORY, args.specDirectory);
-      await createFolder(specFolder, args.failSilently);
-      diff.pack().pipe(fs.createWriteStream(options.diffImage));
-    }
+    diff.pack().pipe(fs.createWriteStream(options.diffImage));
   } catch (error) {
-    return { error: errorSerialize(error) };
+    return {
+      error: errorSerialize(error),
+    };
   }
   return {
     mismatchedPixels,
